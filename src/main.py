@@ -254,7 +254,7 @@ class Producer:
                 columns_mapping=self.columns_mapping,
                 column_names=self.wanted_columns,
                 filedata={'SOURCE': frequency, 'FREQ': 'd', 'SOURCE_ID': filename, 'TS': ts,
-                          'COUNTRY': country}
+                          'COUNTRY': country, 'DISTRCHAN': 'MA'}
             )
             xml.sax.parse(file, h)
             logging.info(f"File {filename} processing finished.")
