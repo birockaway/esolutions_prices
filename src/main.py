@@ -11,12 +11,12 @@ import sys
 import queue
 import threading
 import concurrent.futures
-from collections.abc import Mapping, Iterable
 
 import boto3
 import logging_gelf.handlers
 import logging_gelf.formatters
 from keboola import docker
+from extractors_writer import Writer
 
 
 class PricesHandler(xml.sax.ContentHandler):
@@ -146,7 +146,7 @@ class Producer:
                 str(ts.replace('"', ''))
                 for ts
                 # read all input file rows, except the header
-                in input_file.read().split(os.linesep)[1:]
+                in input_file.read().splitlines()[1:]
             ][0]
 
     def read_manually_added_files(self):
@@ -176,7 +176,7 @@ class Producer:
             dict_writer.writeheader()
             dict_writer.writerow({"max_timestamp_this_run": self.max_timestamp_this_run})
 
-    def download_files_to_parse(self, task_queue):
+    def download_files_to_parse(self):
         # connect to s3 bucket
         session = boto3.Session(aws_access_key_id=self.parameters.get("aws_key"),
                                 aws_secret_access_key=self.parameters.get("#aws_secret"))
@@ -212,7 +212,6 @@ class Producer:
 
         if self.max_timestamp_this_run_tz is None:
             logging.info("No new files found")
-            task_queue.put("DONE")
             sys.exit(0)
 
         logging.info("Collected files to download.")
@@ -262,31 +261,15 @@ class Producer:
             logger.info(f"Processed: {processed_files_count} out of {len(self.files_to_process)}.")
 
         logging.info('All files enqueued. Putting DONE to queue.')
-        task_queue.put('DONE')
 
     def produce(self, task_queue):
-        self.read_last_processed_timestamp()
-        self.read_manually_added_files()
-        self.download_files_to_parse(task_queue)
-        self.parse_files(task_queue)
-
-
-def writer(task_queue, columns_list, threading_event, filepath):
-    with open(filepath, 'w+') as outfile:
-        results_writer = csv.DictWriter(outfile, fieldnames=columns_list, extrasaction='ignore')
-        results_writer.writeheader()
-        while not threading_event.is_set():
-            chunk = task_queue.get()
-            if chunk == 'DONE':
-                logging.info('DONE received. Exiting.')
-                threading_event.set()
-            if isinstance(chunk, Mapping):
-                results_writer.writerow(chunk)
-            elif isinstance(chunk, Iterable):
-                results_writer.writerows(chunk)
-            else:
-                logging.error(f'Chunk is neither Mapping, nor Iterable type. Chunk: {chunk}')
-                logging.info('Skipping')
+        try:
+            self.read_last_processed_timestamp()
+            self.read_manually_added_files()
+            self.download_files_to_parse()
+            self.parse_files(task_queue)
+        finally:
+            task_queue.put('DONE')
 
 
 if __name__ == "__main__":
@@ -327,11 +310,10 @@ if __name__ == "__main__":
     ]
 
     path = f'{os.getenv("KBC_DATADIR")}out/tables/results.csv'
-
     pipeline = queue.Queue(maxsize=1000)
     event = threading.Event()
     producer = Producer()
-
+    writer = Writer(pipeline, colnames, path)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         executor.submit(producer.produce, pipeline)
-        executor.submit(writer, pipeline, colnames, event, path)
+        executor.submit(writer)
